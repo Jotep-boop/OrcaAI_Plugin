@@ -1,6 +1,6 @@
 # Tuning Assistant specification
 
-Status: design and calculation core for the `0.7` development branch.
+Status: interactive beta for the `0.7` development branch.
 
 ## Product goal
 
@@ -33,31 +33,34 @@ write API. Directly editing Orca profile files is out of scope.
 
 1. Mechanical preflight: loose fasteners, grub screws, nozzle condition,
    thermistor type and unobstructed extrusion.
-2. Extruder calibration:
+2. PID tuning for the hotend and bed when hardware has changed or temperature
+   control is unstable. This is printer maintenance, not a per-filament test.
+3. Extruder calibration:
    - Klipper: calculate `rotation_distance`.
    - Marlin/RepRapFirmware: calculate E-steps.
    - Repeat measurements must agree; otherwise diagnose the extruder or hotend
      before continuing.
-3. Build surface and first-layer squish.
+4. Build surface and first-layer squish.
+5. Klipper Input Shaper when an accelerometer is configured.
 
 These are printer-level results. They must not be stored as filament tuning.
 
 ### Filament profile
 
-4. Temperature, when the material/hotend combination is not already proven.
-5. Pressure Advance using Orca's pattern method by default.
-6. Flow Ratio:
+6. Temperature, when the material/hotend combination is not already proven.
+7. Pressure Advance using Orca's pattern method by default.
+8. Flow Ratio:
    - prefer Orca's Archimedean Chords + YOLO method;
    - retain the legacy two-pass calculator;
    - judge the broad centre area and avoid treating corner accumulation as the
      primary flow signal.
-7. Cooling and minimum layer time.
-8. Retraction, after Pressure Advance and Flow Ratio.
-9. Maximum volumetric speed as an advanced/performance step. Report both the
+9. Cooling and minimum layer time.
+10. Retraction, after Pressure Advance and Flow Ratio.
+11. Maximum volumetric speed as an advanced/performance step. Report both the
    measured failure threshold and a separately selected safety margin.
 
-Motion tuning, input shaping, VFA and dimensional compensation are later
-modules and must not be mixed into the first filament-tuning MVP.
+Detailed motion-limit tuning, VFA and dimensional compensation are later
+modules. Basic Klipper Input Shaper is included in the full-calibration beta.
 
 ## Wizard state
 
@@ -113,3 +116,4 @@ sample is the reliable MVP.
 - [OrcaSlicer Flow Ratio Calibration](https://github.com/OrcaSlicer/OrcaSlicer/wiki/flow_ratio_calib)
 - [OrcaSlicer Pressure Advance](https://github.com/OrcaSlicer/OrcaSlicer/wiki/pressure_advance_calib)
 - [OrcaSlicer Max Volumetric Speed](https://github.com/OrcaSlicer/OrcaSlicer/wiki/volumetric_speed_calib)
+- [Klipper PID_CALIBRATE and SAVE_CONFIG](https://www.klipper3d.org/G-Codes.html#pid_calibrate)

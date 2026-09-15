@@ -80,9 +80,15 @@ python3 -m py_compile orca_ai.py
 
 ## Roadmap
 
-- `0.7`: guided filament tuning using OrcaSlicer's calibration workflows,
-  starting with temperature, flow ratio, pressure advance and maximum
-  volumetric speed.
+- `0.7.0-beta.1` is available on the
+  [`feature/tuning-assistant`](../../tree/feature/tuning-assistant) branch.
+  It adds an interactive, resumable full-calibration guide with printer-level
+  steps (mechanical preflight, conditional Klipper PID tuning, extruder
+  calibration, first layer and Input Shaper) followed by filament-level
+  temperature, Pressure Advance, Flow Ratio, cooling, retraction and maximum
+  volumetric-flow steps.
+- The tuning beta is guidance-only. It generates commands and calculated
+  values, but does not write printer configuration or Orca profiles.
 
 ## Disclaimer
 

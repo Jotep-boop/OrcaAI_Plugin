@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0-beta.1
+
+- Add a separate Tuning tab with an 11-step, resumable calibration workflow.
+- Add conditional Klipper PID tuning for both hotend and bed, using target
+  temperatures from the active Orca filament profile.
+- Add printer-level mechanical, extruder, first-layer and Input Shaper steps.
+- Add filament-level temperature, Pressure Advance, Flow Ratio, cooling,
+  retraction and maximum volumetric-flow steps.
+- Add validated calculators for rotation distance, E-steps, Pressure Advance,
+  Flow Ratio and maximum volumetric flow.
+- Keep all configuration writes manual and show the intended destination for
+  each calculated value.
+
 ## 0.6.0
 
 - Add beginner, experienced and expert guidance levels.

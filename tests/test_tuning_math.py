@@ -56,6 +56,27 @@ class TuningMathTests(unittest.TestCase):
             plugin.volumetric_speed_to_linear_speed(24, 0.2, 0.4), 300
         )
 
+    def test_wizard_dispatcher_formats_profile_results(self):
+        rotation = plugin.tuning_calculation(
+            "rotation_distance",
+            {"current": "40", "requested": "100", "actual": "98"},
+        )
+        self.assertEqual(rotation["formatted"], "39.200000")
+        self.assertEqual(rotation["profile_key"], "rotation_distance")
+
+        max_flow = plugin.tuning_calculation(
+            "max_flow",
+            {"start": "5", "step": "0.5", "height": "19", "margin": "15"},
+        )
+        self.assertEqual(max_flow["formatted"], "12.32 mm³/s")
+        self.assertEqual(max_flow["measured_formatted"], "14.50 mm³/s")
+
+    def test_wizard_dispatcher_rejects_unknown_or_missing_values(self):
+        with self.assertRaises(ValueError):
+            plugin.tuning_calculation("unknown", {})
+        with self.assertRaises(ValueError):
+            plugin.tuning_calculation("rotation_distance", None)
+
     def test_rejects_non_finite_and_impossible_inputs(self):
         with self.assertRaises(ValueError):
             plugin.calculate_rotation_distance(40, 100, math.inf)

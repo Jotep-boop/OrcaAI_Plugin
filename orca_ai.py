@@ -6,10 +6,10 @@
 # name = "Orca AI"
 # description = "Context-aware OrcaSlicer help through the OpenAI Responses API."
 # author = "Jeppe"
-# version = "0.6.0"
+# version = "0.7.0-beta.1"
 # ///
 
-"""Orca AI 0.6.0 for OrcaSlicer 2.5.0-dev build ac3997c0."""
+"""Orca AI 0.7.0-beta.1 for OrcaSlicer 2.5.0-dev build ac3997c0."""
 
 import json
 import math
@@ -223,6 +223,66 @@ def volumetric_speed_to_linear_speed(volumetric_speed, layer_height, line_width)
     line_width = _finite_number("Linjebredd", line_width, positive=True)
     return volumetric_speed / layer_height / line_width
 
+
+def tuning_calculation(kind, values):
+    """Calculate one wizard result without allowing arbitrary function calls."""
+    if not isinstance(values, dict):
+        raise ValueError("Kalibreringsvärden saknas.")
+    if kind == "rotation_distance":
+        result = calculate_rotation_distance(
+            values.get("current"), values.get("requested"), values.get("actual")
+        )
+        return {
+            "value": result,
+            "formatted": f"{result:.6f}",
+            "profile_key": "rotation_distance",
+            "destination": "Klipper printer.cfg → [extruder]",
+        }
+    if kind == "e_steps":
+        result = calculate_e_steps(
+            values.get("current"), values.get("requested"), values.get("actual")
+        )
+        return {
+            "value": result,
+            "formatted": f"{result:.3f}",
+            "profile_key": "M92 E",
+            "destination": "Marlin/RepRapFirmware",
+        }
+    if kind == "flow_ratio":
+        result = calculate_flow_ratio(
+            values.get("current"), values.get("modifier"), values.get("method", "yolo")
+        )
+        return {
+            "value": result,
+            "formatted": f"{result:.4f}",
+            "profile_key": "filament_flow_ratio",
+            "destination": "OrcaSlicer filamentprofil",
+        }
+    if kind == "pressure_advance":
+        result = calculate_pressure_advance(
+            values.get("start"), values.get("step"), values.get("height")
+        )
+        return {
+            "value": result,
+            "formatted": f"{result:.5f}",
+            "profile_key": "pressure_advance",
+            "destination": "OrcaSlicer filamentprofil",
+        }
+    if kind == "max_flow":
+        result = calculate_max_volumetric_speed(
+            values.get("start"), values.get("step"), values.get("height"),
+            values.get("margin", 0),
+        )
+        return {
+            **result,
+            "value": result["recommended_mm3_s"],
+            "formatted": f"{result['recommended_mm3_s']:.2f} mm³/s",
+            "measured_formatted": f"{result['measured_mm3_s']:.2f} mm³/s",
+            "profile_key": "filament_max_volumetric_speed",
+            "destination": "OrcaSlicer filamentprofil",
+        }
+    raise ValueError("Okänd kalibreringsberäkning.")
+
 SLICE_DATA_LOCK = threading.Lock()
 LAST_SLICE_SNAPSHOT = None
 SLICE_SNAPSHOTS_BY_PLATE = {}
@@ -270,6 +330,14 @@ PAGE_HTML = r"""
     .error{align-self:flex-start;background:var(--orca-bg);border:1px solid #d84a4a;color:#d84a4a}
     .starter{margin:auto;text-align:center;max-width:560px}.starter h2{margin-bottom:8px}
     .quick{display:flex;flex-wrap:wrap;justify-content:center;gap:7px;margin-top:14px}
+    .tabs{display:flex;gap:5px}.tabs button.active{background:var(--orca-accent);color:var(--orca-accent-fg);border-color:transparent}
+    .hidden{display:none!important}.tune-top{margin:14px 0}.tune-card{padding:16px;border:1px solid var(--orca-border);border-radius:11px;background:var(--orca-bg);min-height:340px}
+    .tune-meta{display:flex;gap:7px;flex-wrap:wrap;margin:8px 0 13px}.tune-pill{font-size:11px;padding:4px 8px;border-radius:999px;border:1px solid var(--orca-border);color:var(--orca-muted)}
+    .tune-card h3{margin:0 0 8px;font-size:18px}.tune-card p{line-height:1.45}.tune-card ul,.tune-card ol{padding-left:22px;line-height:1.45}
+    .tune-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:13px 0}.tune-fields .field{margin:0}
+    .command{padding:10px;border:1px solid var(--orca-border);border-radius:7px;background:color-mix(in srgb,var(--orca-bg) 82%,var(--orca-fg) 18%);font-family:monospace;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
+    .tune-result{margin-top:12px;padding:11px;border-left:3px solid var(--orca-accent);background:color-mix(in srgb,var(--orca-bg) 88%,var(--orca-accent) 12%)}
+    .progress-track{height:7px;border-radius:999px;background:color-mix(in srgb,var(--orca-bg) 80%,var(--orca-fg) 20%);overflow:hidden}.progress-fill{height:100%;background:var(--orca-accent);transition:width .2s}
     button{border:0;border-radius:8px;padding:9px 13px;cursor:pointer;font-weight:600;background:var(--orca-accent);color:var(--orca-accent-fg)}
     button.secondary{background:transparent;color:var(--orca-fg);border:1px solid var(--orca-border)}
     button:disabled{opacity:.5;cursor:default}
@@ -289,25 +357,39 @@ PAGE_HTML = r"""
   </div>
   <div class="layout">
     <section class="panel">
-      <div class="panel-head"><h2>Chatt</h2><button class="secondary" id="clear">Rensa</button></div>
-      <div class="row" style="margin-top:10px">
-        <div class="field" style="margin:0;flex:1"><label>Erfarenhetsnivå</label><select id="experience-level"><option value="beginner">Nybörjare</option><option value="experienced" selected>Erfaren</option><option value="expert">Expert</option></select></div>
-        <div class="field" style="margin:0;flex:1"><label>Svarsläge</label><select id="response-mode"><option value="quick" selected>Snabbkontroll</option><option value="deep">Djup analys</option></select></div>
+      <div class="panel-head">
+        <div class="tabs"><button class="secondary active" id="tab-chat">Chatt</button><button class="secondary" id="tab-tuning">Tuning</button></div>
+        <button class="secondary" id="clear">Rensa</button>
       </div>
-      <div class="chat" id="chat">
-        <div class="starter" id="starter">
-          <h2>Vad vill du förbättra?</h2>
-          <div class="muted">Aktiv skrivare, filament, process och modell används som kontext.</div>
-          <div class="quick">
-            <button class="secondary">Kontrollera projektet före utskrift</button>
-            <button class="secondary">Optimera för hållfasthet</button>
-            <button class="secondary">Kan utskriftstiden kortas?</button>
-            <button class="secondary">Behöver modellen support?</button>
+      <div id="chat-view">
+        <div class="row" style="margin-top:10px">
+          <div class="field" style="margin:0;flex:1"><label>Erfarenhetsnivå</label><select id="experience-level"><option value="beginner">Nybörjare</option><option value="experienced" selected>Erfaren</option><option value="expert">Expert</option></select></div>
+          <div class="field" style="margin:0;flex:1"><label>Svarsläge</label><select id="response-mode"><option value="quick" selected>Snabbkontroll</option><option value="deep">Djup analys</option></select></div>
+        </div>
+        <div class="chat" id="chat">
+          <div class="starter" id="starter">
+            <h2>Vad vill du förbättra?</h2>
+            <div class="muted">Aktiv skrivare, filament, process och modell används som kontext.</div>
+            <div class="quick">
+              <button class="secondary">Kontrollera projektet före utskrift</button>
+              <button class="secondary">Optimera för hållfasthet</button>
+              <button class="secondary">Kan utskriftstiden kortas?</button>
+              <button class="secondary">Behöver modellen support?</button>
+            </div>
           </div>
         </div>
+        <div class="composer"><textarea id="prompt" placeholder="Fråga om modellen eller inställningarna…"></textarea><button id="send">Skicka</button></div>
+        <div class="small muted" style="margin-top:7px">Enter skickar · Shift+Enter gör ny rad</div>
       </div>
-      <div class="composer"><textarea id="prompt" placeholder="Fråga om modellen eller inställningarna…"></textarea><button id="send">Skicka</button></div>
-      <div class="small muted" style="margin-top:7px">Enter skickar · Shift+Enter gör ny rad</div>
+      <div id="tuning-view" class="hidden">
+        <div class="tune-top">
+          <div class="row"><div style="flex:1"><strong>Ellis-inspirerad fullkalibrering</strong><div class="small muted" id="tune-summary">Läser aktiv profil…</div></div><button class="secondary" id="tune-reset">Börja om</button></div>
+          <div class="progress-track" style="margin-top:10px"><div class="progress-fill" id="tune-progress"></div></div>
+          <div class="field"><label>Kalibreringssteg</label><select id="tune-step"></select></div>
+        </div>
+        <div class="tune-card" id="tune-card"></div>
+        <div class="row" style="justify-content:space-between;margin-top:11px"><button class="secondary" id="tune-prev">Föregående</button><div class="row"><button class="secondary" id="tune-skip">Hoppa över</button><button id="tune-done">Markera klar</button></div><button class="secondary" id="tune-next">Nästa</button></div>
+      </div>
     </section>
     <aside>
       <section class="panel">
@@ -337,7 +419,20 @@ PAGE_HTML = r"""
   </div>
 </main>
 <script>
-const $=id=>document.getElementById(id);let busy=false;
+const $=id=>document.getElementById(id);let busy=false,currentContext=null,tuneState={index:0,done:[],skipped:[]};
+const TUNING_STEPS=[
+  {id:"preflight",title:"1. Mekanisk grundkontroll",scope:"Skrivare"},
+  {id:"pid",title:"2. PID – hotend och bädd",scope:"Skrivare · vid behov"},
+  {id:"extruder",title:"3. Extruderkalibrering",scope:"Skrivare"},
+  {id:"first_layer",title:"4. Byggyta och första lager",scope:"Skrivare"},
+  {id:"input_shaper",title:"5. Input Shaper",scope:"Skrivare · Klipper"},
+  {id:"temperature",title:"6. Temperatur",scope:"Filament"},
+  {id:"pa",title:"7. Pressure Advance",scope:"Filament"},
+  {id:"flow",title:"8. Flow Ratio",scope:"Filament"},
+  {id:"cooling",title:"9. Kylning och lagertid",scope:"Filament"},
+  {id:"retraction",title:"10. Retraction",scope:"Filament"},
+  {id:"max_flow",title:"11. Maxvolymflöde",scope:"Filament · prestanda"}
+];
 function status(text,state=""){ $("status").textContent=text;$("status-dot").className="dot "+state }
 function setBusy(v){busy=v;$("send").disabled=v;$("prompt").disabled=v;status(v?"AI tänker…":"Redo",v?"busy":"ready")}
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
@@ -358,14 +453,45 @@ function renderMarkdown(text){
   closeList();return out
 }
 function plateCount(){const n=Number($("plate-count").value);return Number.isInteger(n)&&n>0?n:null}
+function firstValue(v,fallback){if(Array.isArray(v))v=v[0];if(v===null||v===undefined||v==="")return fallback;const n=Number(v);return Number.isFinite(n)?n:fallback}
+function filamentValues(){return currentContext?.settings?.filaments?.[0]?.values||{}}
+function tuningStorageKey(){return "orca-ai-tuning:"+(currentContext?.printer||"printer")+":"+(currentContext?.filaments?.[0]||"filament")}
+function loadTuneState(){tuneState={index:0,done:[],skipped:[]};try{const saved=JSON.parse(localStorage.getItem(tuningStorageKey())||"null");if(saved&&Number.isInteger(saved.index))tuneState={index:Math.max(0,Math.min(TUNING_STEPS.length-1,saved.index)),done:Array.isArray(saved.done)?saved.done:[],skipped:Array.isArray(saved.skipped)?saved.skipped:[]}}catch(e){}renderTuning()}
+function saveTuneState(){try{localStorage.setItem(tuningStorageKey(),JSON.stringify(tuneState))}catch(e){}}
+function tuneField(id,label,value,extra=""){return '<div class="field"><label>'+escapeHtml(label)+'</label><input id="'+id+'" value="'+escapeHtml(value)+'" '+extra+'></div>'}
+function tuneSelect(id,label,options){return '<div class="field"><label>'+escapeHtml(label)+'</label><select id="'+id+'">'+options.map(o=>'<option value="'+o[0]+'">'+escapeHtml(o[1])+'</option>').join("")+'</select></div>'}
+function tuningStepHtml(step){const f=filamentValues(),nozzle=firstValue(f.nozzle_temperature,240),bed=firstValue(f.hot_plate_temp,100),flow=firstValue(f.filament_flow_ratio,0.98),maxFlow=firstValue(f.filament_max_volumetric_speed,20),pa=firstValue(f.pressure_advance,0);
+  if(step.id==="preflight")return '<h3>Mekaniken först</h3><p>Kalibrering kan inte kompensera för ett mekaniskt fel. Kontrollera detta innan du börjar skriva testdelar:</p><ul><li>Remspänning och att rörelsen är jämn utan glapp eller kärvning.</li><li>Skruvar, linjärskena, trissor och särskilt extruderns grub screws.</li><li>Ren och korrekt varmåtdragen nozzle utan läckage.</li><li>Filamentet extruderar rakt ned utan sidoböjning eller tecken på delvis stopp.</li><li>Rätt termistortyper och rimliga temperaturvärden i Klipper.</li></ul>';
+  if(step.id==="pid")return '<h3>PID-tuning</h3><p>Gör detta efter byte av hotend, heater, termistor, bädd eller när temperaturen oscillerar. Det behöver normalt inte upprepas för varje filament.</p><div class="tune-fields">'+tuneField("pid-hotend","Hotendmål °C",nozzle,'type="number"')+tuneField("pid-bed","Bäddmål °C",bed,'type="number"')+'</div><p class="small muted">Kör ett test i taget när skrivaren är tom och stilla. Klipper startar om när du kör SAVE_CONFIG.</p><div class="label">Hotend</div><div class="command" id="pid-hotend-command"></div><div class="label">Bädd</div><div class="command" id="pid-bed-command"></div>';
+  if(step.id==="extruder")return '<h3>Extruderkalibrering</h3><p>Mät faktisk filamentrörelse. För en direktdriven Voron kan testet göras varmt, men upprepa det och kräv konsekventa resultat.</p><div class="tune-fields">'+tuneSelect("extruder-firmware","Firmware",[["rotation_distance","Klipper"],["e_steps","Marlin / RepRapFirmware"]])+tuneField("extruder-current","Nuvarande värde",'','type="number" step="any" placeholder="Läs från printer.cfg"')+tuneField("extruder-requested","Begärd extrudering mm",100,'type="number" step="any"')+tuneField("extruder-actual","Faktiskt extruderat mm",100,'type="number" step="any"')+'</div><button id="calc-extruder">Beräkna</button><div id="tune-result" class="tune-result hidden"></div>';
+  if(step.id==="first_layer")return '<h3>Byggyta och första lager</h3><ol><li>Rengör byggytan och gör en grov Z-/endstop-kalibrering.</li><li>Skriv flera ett-lagersfält över bädden med minst 0,25 mm första lager.</li><li>Justera live tills linjerna sitter ihop utan tydliga åsar eller genomskinliga glipor.</li><li>Spara den slutliga Z-justeringen enligt din endstop-/probe-konfiguration.</li></ol><p class="small muted">Detta är ett manuellt kvalitetssteg. Assistenten ska inte gissa Z-offset från slicerdata.</p>';
+  if(step.id==="input_shaper")return '<h3>Input Shaper</h3><p>Om en accelerometer är konfigurerad i Klipper kan du mäta båda axlarna automatiskt:</p><div class="command">SHAPER_CALIBRATE\nSAVE_CONFIG</div><p>Kontrollera konsolens rekommenderade shaper och smoothing innan du sparar. Hoppa över steget om skrivaren saknar accelerometer; manuell ringingtower kommer senare.</p>';
+  if(step.id==="temperature")return '<h3>Temperatur</h3><p>Välj <strong>Calibration → Temperature</strong> i Orca och generera ett torn för det aktiva materialet.</p><ul><li>Bedöm lagerbindning, överhäng, bridging, stringing och ytfinish tillsammans.</li><li>Välj inte en temperatur enbart för att en nivå ser blankast ut.</li><li>Spara vald nozzle- och bäddtemperatur i filamentprofilen innan PA och Flow Ratio.</li></ul><div class="tune-result"><strong>Aktuell profil:</strong> nozzle '+nozzle+' °C · bädd '+bed+' °C</div>';
+  if(step.id==="pa")return '<h3>Pressure Advance</h3><p>Välj <strong>Calibration → Pressure Advance → Pattern</strong> och Direct Drive för din Voron. Leta efter skarpast hörn med minst bulge, grop och glipa.</p><div class="tune-fields">'+tuneField("pa-start","Startvärde",0,'type="number" step="any"')+tuneField("pa-step","Steg per mm",0.002,'type="number" step="any"')+tuneField("pa-height","Vald höjd mm",8,'type="number" step="any"')+tuneField("pa-current","Nuvarande PA",pa,'type="number" step="any" disabled')+'</div><button id="calc-pa">Beräkna</button><div id="tune-result" class="tune-result hidden"></div>';
+  if(step.id==="flow")return '<h3>Flow Ratio</h3><p>Välj <strong>Calibration → Flow Ratio → YOLO</strong>. Bedöm den breda mittdelen: jämn yta, inga öppna spår och så lite materialansamling som möjligt.</p><div class="tune-fields">'+tuneSelect("flow-method","Metod",[["yolo","Archimedean Chords + YOLO"],["two_pass","Äldre tvåpassmetod"]])+tuneField("flow-current","Nuvarande flow ratio",flow,'type="number" step="any"')+tuneField("flow-modifier","Vinnande modifierare",0.01,'type="number" step="any"')+'</div><button id="calc-flow">Beräkna</button><div id="tune-result" class="tune-result hidden"></div>';
+  if(step.id==="cooling")return '<h3>Kylning och lagertid</h3><p>Verifiera kylningen med verkliga små lager och överhäng. Bedöm materialet i den kammartemperatur du normalt använder.</p><ul><li>Öka inte fläkten för att maskera för hög temperatur eller för kort lagertid.</li><li>För ABS: prioritera lagerbindning och warpingmotstånd, och använd högre kylning endast där geometrin kräver det.</li><li>Spara resultatet i filamentprofilen, inte i en enskild process om det är materialberoende.</li></ul>';
+  if(step.id==="retraction")return '<h3>Retraction</h3><p>Kör Orcas retraction-test först efter PA och Flow Ratio. Börja lågt på en direktdriven extruder och höj tills stringing förbättras utan att skapa hål, slipning eller onödiga retraktioner.</p><p class="small muted">Kontrollera även temperatur och fukt innan ett högt retractionvärde accepteras. Stringing är inte alltid ett retractionproblem.</p>';
+  if(step.id==="max_flow")return '<h3>Maxvolymflöde</h3><p>Välj <strong>Calibration → Max Volumetric Speed</strong>. Mät höjden precis innan glansförändring, underextrudering eller försämrad lagerbindning börjar.</p><div class="tune-fields">'+tuneField("mf-start","Start mm³/s",5,'type="number" step="any"')+tuneField("mf-step","Steg per mm",0.5,'type="number" step="any"')+tuneField("mf-height","Uppmätt höjd mm",19,'type="number" step="any"')+tuneField("mf-margin","Säkerhetsmarginal %",15,'type="number" step="any"')+'</div><button id="calc-max-flow">Beräkna</button><div id="tune-result" class="tune-result hidden"></div><p class="small muted">Aktuell profilgräns: '+maxFlow+' mm³/s. Testet är ett best case; marginalen är ett separat beslut.</p>';
+  return "";
+}
+function updatePidCommands(){if(!$("pid-hotend-command"))return;const h=Number($("pid-hotend").value),b=Number($("pid-bed").value);$("pid-hotend-command").textContent=Number.isFinite(h)&&h>0?'PID_CALIBRATE HEATER=extruder TARGET='+h+'\nSAVE_CONFIG':'Ange en giltig hotendtemperatur.';$("pid-bed-command").textContent=Number.isFinite(b)&&b>0?'PID_CALIBRATE HEATER=heater_bed TARGET='+b+'\nSAVE_CONFIG':'Ange en giltig bäddtemperatur.'}
+function renderTuning(){if(!$("tune-card"))return;const step=TUNING_STEPS[tuneState.index];$("tune-step").innerHTML=TUNING_STEPS.map((s,i)=>'<option value="'+i+'" '+(i===tuneState.index?'selected':'')+'>'+escapeHtml(s.title)+(tuneState.done.includes(s.id)?' ✓':(tuneState.skipped.includes(s.id)?' – hoppad':''))+'</option>').join("");$("tune-card").innerHTML='<div class="tune-meta"><span class="tune-pill">'+escapeHtml(step.scope)+'</span><span class="tune-pill">Steg '+(tuneState.index+1)+' av '+TUNING_STEPS.length+'</span></div>'+tuningStepHtml(step);const completed=new Set([...tuneState.done,...tuneState.skipped]).size;$("tune-progress").style.width=(completed/TUNING_STEPS.length*100)+'%';$("tune-prev").disabled=tuneState.index===0;$("tune-next").disabled=tuneState.index===TUNING_STEPS.length-1;bindTuningActions();updatePidCommands()}
+function bindTuningActions(){["pid-hotend","pid-bed"].forEach(id=>{if($(id))$(id).oninput=updatePidCommands});if($("calc-extruder"))$("calc-extruder").onclick=()=>tuneCalculate($("extruder-firmware").value,{current:$("extruder-current").value,requested:$("extruder-requested").value,actual:$("extruder-actual").value});if($("calc-pa"))$("calc-pa").onclick=()=>tuneCalculate("pressure_advance",{start:$("pa-start").value,step:$("pa-step").value,height:$("pa-height").value});if($("calc-flow"))$("calc-flow").onclick=()=>tuneCalculate("flow_ratio",{current:$("flow-current").value,modifier:$("flow-modifier").value,method:$("flow-method").value});if($("calc-max-flow"))$("calc-max-flow").onclick=()=>tuneCalculate("max_flow",{start:$("mf-start").value,step:$("mf-step").value,height:$("mf-height").value,margin:$("mf-margin").value})}
+function tuneCalculate(calculation,values){window.orca.postMessage({type:"tuning_calculate",calculation,values})}
+function showTuningResult(result){const e=$("tune-result");if(!e)return;e.classList.remove("hidden");let extra=result.measured_formatted?'<div class="small muted">Uppmätt gräns: '+escapeHtml(result.measured_formatted)+'</div>':'';e.innerHTML='<strong>'+escapeHtml(result.profile_key)+': '+escapeHtml(result.formatted)+'</strong><div class="small">Skrivs manuellt i '+escapeHtml(result.destination)+'.</div>'+extra}
+function showTuningError(message){const e=$("tune-result");if(!e)return;e.classList.remove("hidden");e.innerHTML='<strong>Kontrollera värdena</strong><div class="small">'+escapeHtml(message)+'</div>'}
+function updateTuningContext(){if(!currentContext)return;const nozzle=firstValue(currentContext.settings?.printer?.nozzle_diameter,0.4);$("tune-summary").textContent=(currentContext.printer||"Okänd skrivare")+' · '+nozzle+' mm · '+((currentContext.filaments||[]).join(", ")||"okänt filament");loadTuneState()}
+function switchView(view){const tuning=view==="tuning";$("chat-view").classList.toggle("hidden",tuning);$("tuning-view").classList.toggle("hidden",!tuning);$("tab-chat").classList.toggle("active",!tuning);$("tab-tuning").classList.toggle("active",tuning);$("clear").classList.toggle("hidden",tuning);if(tuning)renderTuning()}
 function add(role,text){const s=$("starter");if(s)s.remove();const e=document.createElement("div");e.className="message "+role;if(role==="assistant")e.innerHTML=renderMarkdown(text);else e.textContent=text;$("chat").appendChild(e);$("chat").scrollTop=$("chat").scrollHeight}
 function getContext(){status("Läser projekt","busy");window.orca.postMessage({type:"context",plate_count:plateCount()})}
 function send(text){const q=String(text||"").trim();if(!q||busy)return;add("user",q);$("prompt").value="";setBusy(true);window.orca.postMessage({type:"chat",text:q,plate_count:plateCount(),experience_level:$("experience-level").value,response_mode:$("response-mode").value})}
 window.orca.onMessage(m=>{
   if(!m||!m.type)return;
-  if(m.type==="context"){const c=m.payload;$("printer").textContent=c.printer;$("process").textContent=c.process;$("filaments").textContent=c.filaments.join(", ")||"Inga";const z=c.model.project_extent_mm;$("model").textContent=c.model.object_count+" objekt · "+c.model.instance_count+" instanser"+(z?" · "+z.map(v=>Number(v).toFixed(1)).join(" × ")+" mm totalt":"");const s=c.slicing||{},snap=s.last_snapshot,n=Number(s.captured_plate_count||0);if(snap&&snap.error)$("slice-info").textContent="Kördes, men analysen misslyckades: "+snap.error;else if(snap)$("slice-info").textContent=(n>1?n+" plattor fångade":"Snapshot fångad")+" · senast "+(snap.plate_index_1_based?"platta "+snap.plate_index_1_based+" · ":"")+snap.object_count+" objekt · "+snap.plate_layer_count+" lager";else if(s.observer_status==="not_selected")$("slice-info").textContent="Inte vald i den aktiva processprofilen";else if(s.observer_status==="selected_waiting")$("slice-info").textContent="Vald · väntar på ny slicing efter pluginstart";else if(s.observer_status==="ran_without_snapshot")$("slice-info").textContent="Kördes, men inget snapshot skapades · se diagnostik";else $("slice-info").textContent="Kan inte läsa valet i den aktiva processprofilen";$("context").textContent=JSON.stringify(c,null,2);if(!busy)status("Redo","ready")}
+  if(m.type==="context"){const c=m.payload;currentContext=c;$("printer").textContent=c.printer;$("process").textContent=c.process;$("filaments").textContent=c.filaments.join(", ")||"Inga";const z=c.model.project_extent_mm;$("model").textContent=c.model.object_count+" objekt · "+c.model.instance_count+" instanser"+(z?" · "+z.map(v=>Number(v).toFixed(1)).join(" × ")+" mm totalt":"");const s=c.slicing||{},snap=s.last_snapshot,n=Number(s.captured_plate_count||0);if(snap&&snap.error)$("slice-info").textContent="Kördes, men analysen misslyckades: "+snap.error;else if(snap)$("slice-info").textContent=(n>1?n+" plattor fångade":"Snapshot fångad")+" · senast "+(snap.plate_index_1_based?"platta "+snap.plate_index_1_based+" · ":"")+snap.object_count+" objekt · "+snap.plate_layer_count+" lager";else if(s.observer_status==="not_selected")$("slice-info").textContent="Inte vald i den aktiva processprofilen";else if(s.observer_status==="selected_waiting")$("slice-info").textContent="Vald · väntar på ny slicing efter pluginstart";else if(s.observer_status==="ran_without_snapshot")$("slice-info").textContent="Kördes, men inget snapshot skapades · se diagnostik";else $("slice-info").textContent="Kan inte läsa valet i den aktiva processprofilen";$("context").textContent=JSON.stringify(c,null,2);updateTuningContext();if(!busy)status("Redo","ready")}
   if(m.type==="session"){ $("model-name").value=m.model;const bad=Boolean(m.key_problem);$("key-status").textContent=bad?"API-nyckeln innehåller ogiltiga tecken":(m.key_configured?"API-nyckel aktiv ("+m.key_source+")":"Ingen nyckel konfigurerad");$("key-dot").className="dot "+(bad?"error":(m.key_configured?"ready":""));$("key").value=""}
   if(m.type==="answer"){setBusy(false);add("assistant",m.text)}
+  if(m.type==="tuning_result"){showTuningResult(m.payload)}
+  if(m.type==="tuning_error"){showTuningError(m.message)}
   if(m.type==="error"){setBusy(false);add("error",m.message)}
   if(m.type==="cleared"){$("chat").innerHTML='<div class="starter" id="starter"><h2>Ny konversation</h2><div class="muted">Projektkontexten läses om vid varje fråga.</div></div>'}
 });
@@ -374,6 +500,13 @@ $("prompt").onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();se
 document.querySelectorAll(".quick button").forEach(b=>b.onclick=()=>send(b.textContent));
 $("refresh").onclick=getContext;$("plate-count").onchange=getContext;$("clear").onclick=()=>window.orca.postMessage({type:"clear"});
 $("save").onclick=()=>window.orca.postMessage({type:"session",api_key:$("key").value,model:$("model-name").value});
+$("tab-chat").onclick=()=>switchView("chat");$("tab-tuning").onclick=()=>switchView("tuning");
+$("tune-step").onchange=e=>{tuneState.index=Number(e.target.value);saveTuneState();renderTuning()};
+$("tune-prev").onclick=()=>{tuneState.index=Math.max(0,tuneState.index-1);saveTuneState();renderTuning()};
+$("tune-next").onclick=()=>{tuneState.index=Math.min(TUNING_STEPS.length-1,tuneState.index+1);saveTuneState();renderTuning()};
+$("tune-done").onclick=()=>{const id=TUNING_STEPS[tuneState.index].id;tuneState.done=[...new Set([...tuneState.done,id])];tuneState.skipped=tuneState.skipped.filter(x=>x!==id);if(tuneState.index<TUNING_STEPS.length-1)tuneState.index++;saveTuneState();renderTuning()};
+$("tune-skip").onclick=()=>{const id=TUNING_STEPS[tuneState.index].id;tuneState.skipped=[...new Set([...tuneState.skipped,id])];tuneState.done=tuneState.done.filter(x=>x!==id);if(tuneState.index<TUNING_STEPS.length-1)tuneState.index++;saveTuneState();renderTuning()};
+$("tune-reset").onclick=()=>{tuneState={index:0,done:[],skipped:[]};saveTuneState();renderTuning()};
 window.orca.postMessage({type:"session_status"});getContext();
 </script>
 </body>
@@ -402,7 +535,8 @@ PRINTER_KEYS = (
 )
 FILAMENT_KEYS = (
     "filament_type", "filament_vendor", "filament_diameter",
-    "filament_flow_ratio", "nozzle_temperature",
+    "filament_flow_ratio", "enable_pressure_advance", "pressure_advance",
+    "pressure_advance_smooth_time", "nozzle_temperature",
     "nozzle_temperature_initial_layer", "hot_plate_temp",
     "hot_plate_temp_initial_layer", "chamber_temperature",
     "filament_max_volumetric_speed", "fan_max_speed", "fan_min_speed",
@@ -979,6 +1113,14 @@ class OrcaAiPage(orca.pages.PagesPluginCapabilityBase):
                     str(message.get("experience_level", "experienced")),
                     str(message.get("response_mode", "quick")),
                 )
+            elif kind == "tuning_calculate":
+                try:
+                    result = tuning_calculation(
+                        str(message.get("calculation", "")), message.get("values", {})
+                    )
+                    self.post_message({"type": "tuning_result", "payload": result})
+                except ValueError as error:
+                    self.post_message({"type": "tuning_error", "message": str(error)})
             elif kind == "clear":
                 self.previous_id = None
                 self.post_message({"type": "cleared"})
