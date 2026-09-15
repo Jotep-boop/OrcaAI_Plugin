@@ -143,6 +143,86 @@ RESPONSE_MODE_INSTRUCTIONS = {
   betydelse för frågan.""",
 }
 
+
+def _finite_number(name, value, *, positive=False, minimum=None, maximum=None):
+    """Normalize a tuning input and reject values that would hide bad results."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} måste vara ett tal.") from error
+    if not math.isfinite(number):
+        raise ValueError(f"{name} måste vara ett ändligt tal.")
+    if positive and number <= 0:
+        raise ValueError(f"{name} måste vara större än noll.")
+    if minimum is not None and number < minimum:
+        raise ValueError(f"{name} måste vara minst {minimum}.")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} får högst vara {maximum}.")
+    return number
+
+
+def calculate_rotation_distance(current, requested, actual):
+    """Klipper rotation_distance after a measured extruder movement."""
+    current = _finite_number("Nuvarande rotation_distance", current, positive=True)
+    requested = _finite_number("Begärd extrudering", requested, positive=True)
+    actual = _finite_number("Uppmätt extrudering", actual, positive=True)
+    return current * actual / requested
+
+
+def calculate_e_steps(current, requested, actual):
+    """Marlin/RepRapFirmware E-steps after a measured extruder movement."""
+    current = _finite_number("Nuvarande E-steps", current, positive=True)
+    requested = _finite_number("Begärd extrudering", requested, positive=True)
+    actual = _finite_number("Uppmätt extrudering", actual, positive=True)
+    return current * requested / actual
+
+
+def calculate_flow_ratio(current, modifier, method="yolo"):
+    """Apply Orca's YOLO or legacy two-pass flow-ratio modifier."""
+    current = _finite_number("Nuvarande flow ratio", current, positive=True)
+    modifier = _finite_number("Modifierare", modifier)
+    if method == "yolo":
+        result = current + modifier
+    elif method == "two_pass":
+        result = current * (100 + modifier) / 100
+    else:
+        raise ValueError("Okänd flow-metod; använd yolo eller two_pass.")
+    if result <= 0:
+        raise ValueError("Beräknad flow ratio måste vara större än noll.")
+    return result
+
+
+def calculate_pressure_advance(start, step, measured_height):
+    """Pressure Advance represented by a measured height in Orca's tower."""
+    start = _finite_number("Startvärde", start, minimum=0)
+    step = _finite_number("Steg", step, positive=True)
+    measured_height = _finite_number("Uppmätt höjd", measured_height, minimum=0)
+    return start + step * measured_height
+
+
+def calculate_max_volumetric_speed(start, step, measured_height,
+                                   safety_margin_percent=0):
+    """Measured Orca max-flow result and a user-selected safety margin."""
+    start = _finite_number("Startflöde", start, minimum=0)
+    step = _finite_number("Flödessteg", step, positive=True)
+    measured_height = _finite_number("Uppmätt höjd", measured_height, minimum=0)
+    margin = _finite_number("Säkerhetsmarginal", safety_margin_percent,
+                            minimum=0, maximum=99)
+    measured = start + step * measured_height
+    return {
+        "measured_mm3_s": measured,
+        "recommended_mm3_s": measured * (1 - margin / 100),
+        "safety_margin_percent": margin,
+    }
+
+
+def volumetric_speed_to_linear_speed(volumetric_speed, layer_height, line_width):
+    """Convert mm³/s into the corresponding linear print speed in mm/s."""
+    volumetric_speed = _finite_number("Volymflöde", volumetric_speed, positive=True)
+    layer_height = _finite_number("Lagerhöjd", layer_height, positive=True)
+    line_width = _finite_number("Linjebredd", line_width, positive=True)
+    return volumetric_speed / layer_height / line_width
+
 SLICE_DATA_LOCK = threading.Lock()
 LAST_SLICE_SNAPSHOT = None
 SLICE_SNAPSHOTS_BY_PLATE = {}
