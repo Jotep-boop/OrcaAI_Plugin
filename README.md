@@ -9,7 +9,7 @@ does not modify OrcaSlicer settings or models.
 
 ## Current status
 
-- Version: `0.5.6`
+- Version: `0.6.0`
 - Tested with: OrcaSlicer `2.5.0-dev`, build
   `ac3997c0d1920dc37ebb0a093e7e4ba423a4e7ea`
 - API provider: OpenAI Responses API
@@ -28,6 +28,8 @@ other OrcaSlicer builds is not guaranteed.
 - Keeps separate snapshots for multiple build plates.
 - Estimates requested volumetric flow for common feature types.
 - Produces compact Markdown without tables for OrcaSlicer's narrow chat view.
+- Adapts guidance for beginner, experienced and expert users.
+- Offers a concise quick-check mode and an optional deep-analysis mode.
 - Keeps the API key in memory only for the current OrcaSlicer session.
 
 ## Installation
@@ -75,6 +77,12 @@ Basic syntax validation:
 ```bash
 python3 -m py_compile orca_ai.py
 ```
+
+## Roadmap
+
+- `0.7`: guided filament tuning using OrcaSlicer's calibration workflows,
+  starting with temperature, flow ratio, pressure advance and maximum
+  volumetric speed.
 
 ## Disclaimer
 

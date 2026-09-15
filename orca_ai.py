@@ -6,10 +6,10 @@
 # name = "Orca AI"
 # description = "Context-aware OrcaSlicer help through the OpenAI Responses API."
 # author = "Jeppe"
-# version = "0.5.6"
+# version = "0.6.0"
 # ///
 
-"""Orca AI 0.5.6 for OrcaSlicer 2.5.0-dev build ac3997c0."""
+"""Orca AI 0.6.0 for OrcaSlicer 2.5.0-dev build ac3997c0."""
 
 import json
 import math
@@ -25,17 +25,18 @@ import orca
 
 OPENAI_URL = "https://api.openai.com/v1/responses"
 DEFAULT_MODEL = "gpt-5.6-terra"
-SYSTEM_PROMPT = """Du är Orca AI, en försiktig expert på FFF/FDM och OrcaSlicer.
-Svara på svenska, konkret och lättläst. Utgå från projektkontexten och skilj
-alltid på fakta, bedömning och saknad information. Låtsas aldrig att du har
+SYSTEM_PROMPT = """Du är Orca AI, en expert på FFF/FDM och OrcaSlicer.
+Svara på svenska, konkret och lättläst. Utgå från projektkontexten. Låtsas
+aldrig att du har
 ändrat något: du är rådgivande och kan ännu inte skriva till OrcaSlicer.
 
 VIKTIGT OM BYGGPLATTOR:
 - model.project_extent_mm omfattar hela projektet och kan sträcka sig över flera
   byggplattor. Jämför ALDRIG detta mått med storleken på en enda byggplatta.
 - Orcas plugin-API i denna version anger inte vilken platta varje objekt tillhör.
-- Om plates.reported_count är större än 1 ska du tydligt säga att passformen per
-  platta inte kan verifieras automatiskt. Gissa inte plattillhörighet från XY-läge.
+- Om plates.reported_count är större än antalet fångade plattor saknas underlag
+  för minst en platta. Nämn detta endast när det påverkar den efterfrågade
+  bedömningen. Gissa inte plattillhörighet från XY-läge.
 - Använd endast settings.build_volume för bäddens verkliga mått. Gissa aldrig
   byggytan från skrivarens namn.
 - Skilj på model.object_count och model.instance_count. Filnamn som innehåller
@@ -45,13 +46,23 @@ VIKTIGT OM BYGGPLATTOR:
   Orca-instans kan innehålla flera frånkopplade meshkroppar, till exempel fyra
   clamps i en fil med suffixet _x4. Skriv därför "ett skivat Orca-objekt från
   Belt_Clamp_x4.stl", aldrig "en Belt Clamp", om antal meshkomponenter saknas.
-  Ange physical_part_count som okänt och be användaren kontrollera preview/BOM.
+  Om användaren frågar om antal ska physical_part_count anges som okänt och
+  preview/BOM föreslås som kontrollkälla.
 
 FORMAT:
-- Svara normalt med högst cirka 700 ord; prioritera avvikelser och konkreta råd.
+- Börja en projekt- eller utskriftskontroll med exakt en status: REDO,
+  KONTROLLERA eller STOPP. Använd inte statusetiketten för vanliga sakfrågor.
+- Prioritera verifierade avvikelser och konkreta råd. Upprepa inte samma
+  reservation i flera avsnitt.
 - Använd Markdown-rubriker, korta stycken och punktlistor. Använd ALDRIG
   Markdown-tabeller eller HTML; chattytan är för smal för tabeller.
 - Lista inte varje inställning som redan är bra. Samla godkända kontroller kort.
+- Nämn inte rutinmässiga kontroller av support, brim, orientering, bäddmarginal
+  eller preview om projektdata inte visar ett konkret problem eller användaren
+  frågar specifikt om dem. Att en funktion är avstängd är inte i sig ett fel.
+- Resonera inte om antal utifrån suffix som x2/x4 om användaren inte uttryckligen
+  frågar om antal, BOM eller saknade delar.
+- Ta bara upp saknad information när den hindrar svaret eller kan ändra beslutet.
 - Vid inställningsförslag: ange Orca-nyckel, nuvarande värde, förslag, orsak och
   viktig kompromiss i ett kort punktblock per inställning.
 - Kalla inte en hastighet aggressiv enbart utifrån mm/s. Bedöm först lagerhöjd,
@@ -102,7 +113,35 @@ FORMAT:
   world_bboxar visar däremot bara möjlig kollision, inte faktisk meshkollision.
   Jämför dem inte med bäddens 0–bredd/0–djup eftersom aktuell plattas globala
   origo/offset inte exponeras. Auto-brimens slutliga kontur exponeras inte heller.
-- Ställ en kort följdfråga när underlaget inte räcker."""
+  Nämn inte dessa API-begränsningar om de saknar betydelse för frågan.
+- Ställ en kort följdfråga endast när svaret faktiskt kräver den."""
+
+EXPERIENCE_INSTRUCTIONS = {
+    "beginner": """ERFARENHETSNIVÅ: NYBÖRJARE
+- Förklara kort varför en avvikelse spelar roll och var den kontrolleras i Orca.
+- Ta med högst tre relevanta förebyggande kontroller när de hjälper användaren.
+- Undvik jargong eller förklara den med en kort mening.""",
+    "experienced": """ERFARENHETSNIVÅ: ERFAREN
+- Förutsätt att användaren kan OrcaSlicer och förstår support, brim och preview.
+- Ta endast upp mätbara avvikelser, tydliga risker eller sådant användaren frågar om.
+- Ge inte allmänna påminnelser om visuella kontroller eller etablerad grundpraxis.""",
+    "expert": """ERFARENHETSNIVÅ: EXPERT
+- Rapportera endast blockerande fel, mätbara gränsöverskridanden och direkt svar
+  på frågan. Utelämna introduktioner, grundförklaringar och rutinråd.
+- Var tekniskt precis och ange relevanta Orca-nycklar och värden.""",
+}
+
+RESPONSE_MODE_INSTRUCTIONS = {
+    "quick": """SVARSLÄGE: SNABBKONTROLL
+- Håll svaret till cirka 120 ord, om inte användaren uttryckligen ber om mer.
+- Vid projektkontroll: en statusrad, en kompakt rad per fångad platta och högst
+  tre åtgärder totalt. Om inget behöver göras, skriv ingen åtgärdslista.
+- Sammanfatta godkända kontroller på högst en rad.""",
+    "deep": """SVARSLÄGE: DJUP ANALYS
+- Ge nödvändiga beräkningar och resonemang, men håll svaret under cirka 700 ord.
+- Strukturera efter relevanta avvikelser; skapa inte avsnitt för sådant som saknar
+  betydelse för frågan.""",
+}
 
 SLICE_DATA_LOCK = threading.Lock()
 LAST_SLICE_SNAPSHOT = None
@@ -154,9 +193,9 @@ PAGE_HTML = r"""
     button{border:0;border-radius:8px;padding:9px 13px;cursor:pointer;font-weight:600;background:var(--orca-accent);color:var(--orca-accent-fg)}
     button.secondary{background:transparent;color:var(--orca-fg);border:1px solid var(--orca-border)}
     button:disabled{opacity:.5;cursor:default}
-    textarea,input{border:1px solid var(--orca-border);border-radius:8px;padding:10px 11px;background:var(--orca-bg);color:var(--orca-fg);font-family:inherit}
+    textarea,input,select{border:1px solid var(--orca-border);border-radius:8px;padding:10px 11px;background:var(--orca-bg);color:var(--orca-fg);font-family:inherit}
     textarea{flex:1;min-width:0;min-height:48px;max-height:130px;resize:vertical}.composer{align-items:flex-end}.composer button{min-height:48px}
-    input{width:100%}.field{margin-top:10px}.field label{display:block;font-size:11px;color:var(--orca-muted);margin-bottom:5px}
+    input,select{width:100%}.field{margin-top:10px}.field label{display:block;font-size:11px;color:var(--orca-muted);margin-bottom:5px}
     .small{font-size:12px;line-height:1.4}.privacy{font-size:12px;line-height:1.45}details{margin-top:11px}summary{cursor:pointer;color:var(--orca-muted)}
     pre{max-height:230px;overflow:auto;font-size:11px;white-space:pre-wrap}
     @media(max-width:850px){.layout{grid-template-columns:1fr}.chat{height:390px}}
@@ -171,6 +210,10 @@ PAGE_HTML = r"""
   <div class="layout">
     <section class="panel">
       <div class="panel-head"><h2>Chatt</h2><button class="secondary" id="clear">Rensa</button></div>
+      <div class="row" style="margin-top:10px">
+        <div class="field" style="margin:0;flex:1"><label>Erfarenhetsnivå</label><select id="experience-level"><option value="beginner">Nybörjare</option><option value="experienced" selected>Erfaren</option><option value="expert">Expert</option></select></div>
+        <div class="field" style="margin:0;flex:1"><label>Svarsläge</label><select id="response-mode"><option value="quick" selected>Snabbkontroll</option><option value="deep">Djup analys</option></select></div>
+      </div>
       <div class="chat" id="chat">
         <div class="starter" id="starter">
           <h2>Vad vill du förbättra?</h2>
@@ -237,7 +280,7 @@ function renderMarkdown(text){
 function plateCount(){const n=Number($("plate-count").value);return Number.isInteger(n)&&n>0?n:null}
 function add(role,text){const s=$("starter");if(s)s.remove();const e=document.createElement("div");e.className="message "+role;if(role==="assistant")e.innerHTML=renderMarkdown(text);else e.textContent=text;$("chat").appendChild(e);$("chat").scrollTop=$("chat").scrollHeight}
 function getContext(){status("Läser projekt","busy");window.orca.postMessage({type:"context",plate_count:plateCount()})}
-function send(text){const q=String(text||"").trim();if(!q||busy)return;add("user",q);$("prompt").value="";setBusy(true);window.orca.postMessage({type:"chat",text:q,plate_count:plateCount()})}
+function send(text){const q=String(text||"").trim();if(!q||busy)return;add("user",q);$("prompt").value="";setBusy(true);window.orca.postMessage({type:"chat",text:q,plate_count:plateCount(),experience_level:$("experience-level").value,response_mode:$("response-mode").value})}
 window.orca.onMessage(m=>{
   if(!m||!m.type)return;
   if(m.type==="context"){const c=m.payload;$("printer").textContent=c.printer;$("process").textContent=c.process;$("filaments").textContent=c.filaments.join(", ")||"Inga";const z=c.model.project_extent_mm;$("model").textContent=c.model.object_count+" objekt · "+c.model.instance_count+" instanser"+(z?" · "+z.map(v=>Number(v).toFixed(1)).join(" × ")+" mm totalt":"");const s=c.slicing||{},snap=s.last_snapshot,n=Number(s.captured_plate_count||0);if(snap&&snap.error)$("slice-info").textContent="Kördes, men analysen misslyckades: "+snap.error;else if(snap)$("slice-info").textContent=(n>1?n+" plattor fångade":"Snapshot fångad")+" · senast "+(snap.plate_index_1_based?"platta "+snap.plate_index_1_based+" · ":"")+snap.object_count+" objekt · "+snap.plate_layer_count+" lager";else if(s.observer_status==="not_selected")$("slice-info").textContent="Inte vald i den aktiva processprofilen";else if(s.observer_status==="selected_waiting")$("slice-info").textContent="Vald · väntar på ny slicing efter pluginstart";else if(s.observer_status==="ran_without_snapshot")$("slice-info").textContent="Kördes, men inget snapshot skapades · se diagnostik";else $("slice-info").textContent="Kan inte läsa valet i den aktiva processprofilen";$("context").textContent=JSON.stringify(c,null,2);if(!busy)status("Redo","ready")}
@@ -741,7 +784,8 @@ class OrcaAiPage(orca.pages.PagesPluginCapabilityBase):
             "key_problem": _api_key_error(self.api_key) if self.api_key else None,
         })
 
-    def start_chat(self, question, plate_count=None):
+    def start_chat(self, question, plate_count=None, experience_level="experienced",
+                   response_mode="quick"):
         question = question.strip()
         if not question:
             self.post_message({"type": "error", "message": "Skriv en fråga först."})
@@ -765,10 +809,13 @@ class OrcaAiPage(orca.pages.PagesPluginCapabilityBase):
                 self.busy = False
             self.post_message({"type": "error", "message": f"Kunde inte läsa projektet: {error}"})
             return
-        threading.Thread(target=self.chat_worker, args=(question, context),
+        experience_level = experience_level if experience_level in EXPERIENCE_INSTRUCTIONS else "experienced"
+        response_mode = response_mode if response_mode in RESPONSE_MODE_INSTRUCTIONS else "quick"
+        threading.Thread(target=self.chat_worker,
+                         args=(question, context, experience_level, response_mode),
                          name="OrcaAiRequest", daemon=True).start()
 
-    def chat_worker(self, question, context):
+    def chat_worker(self, question, context, experience_level, response_mode):
         try:
             ai_context = _context_for_ai(context)
             contract = ai_context.get("analysis_contract", {})
@@ -776,11 +823,10 @@ class OrcaAiPage(orca.pages.PagesPluginCapabilityBase):
             scope_instruction = (
                 "OBLIGATORISKT SVARSKONTRAKT:\n"
                 f"- {len(captured)} skivade plattor är fångade: {captured}.\n"
-                f"- Om användaren inte uttryckligen begränsar frågan till en platta måste svaret innehålla dessa rubriker: "
-                + ", ".join(f"Platta {number}" for number in captured) + ".\n"
+                "- Om frågan gäller hela projektet ska varje fångad platta omfattas. "
+                "I snabbkontroll räcker en kompakt rad per platta; i djup analys kan rubriker användas.\n"
                 "- Läs varje post i sliced_plates. Säg inte att en fångad platta saknas.\n"
                 "- Globala printable-värden beskriver aktiv GUI-platta och får inte tolkas som projektomfattande exkludering.\n"
-                "- Kontrollera att alla obligatoriska plattrubriker finns innan svaret avslutas.\n\n"
                 if captured else ""
             )
             text = (scope_instruction + "AKTUELL PROJEKTKONTEXT (JSON):\n"
@@ -788,9 +834,11 @@ class OrcaAiPage(orca.pages.PagesPluginCapabilityBase):
                     + "\n\nANVÄNDARENS FRÅGA:\n" + question)
             payload = {
                 "model": self.model,
-                "instructions": SYSTEM_PROMPT,
+                "instructions": (SYSTEM_PROMPT + "\n\n"
+                                 + EXPERIENCE_INSTRUCTIONS[experience_level] + "\n\n"
+                                 + RESPONSE_MODE_INSTRUCTIONS[response_mode]),
                 "input": text,
-                "max_output_tokens": 4000,
+                "max_output_tokens": 1600 if response_mode == "quick" else 4000,
             }
             if self.previous_id:
                 payload["previous_response_id"] = self.previous_id
@@ -846,7 +894,11 @@ class OrcaAiPage(orca.pages.PagesPluginCapabilityBase):
                 self.previous_id = None
                 self.send_session()
             elif kind == "chat":
-                self.start_chat(str(message.get("text", "")), message.get("plate_count"))
+                self.start_chat(
+                    str(message.get("text", "")), message.get("plate_count"),
+                    str(message.get("experience_level", "experienced")),
+                    str(message.get("response_mode", "quick")),
+                )
             elif kind == "clear":
                 self.previous_id = None
                 self.post_message({"type": "cleared"})

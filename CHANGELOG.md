@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- Add beginner, experienced and expert guidance levels.
+- Make experienced guidance the default and suppress routine slicer reminders.
+- Add quick-check and deep-analysis response modes.
+- Give project checks a clear REDO, KONTROLLERA or STOPP status.
+- Limit quick checks to one compact line per captured plate and at most three actions.
+
 ## 0.5.6
 
 - Distinguish Orca objects and instances from disconnected physical parts.
